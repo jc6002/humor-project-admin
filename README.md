@@ -1,54 +1,73 @@
-# AI Joke Arena — Week 5
+# AI Joke Arena — Admin Panel (Week 6)
 
-Week 5 evolution of the AI Joke Arena, upgrading model comedic capability, eliminating user friction with hybrid matchmaking, and accelerating Hall-of-Flame leaderboard graduation.
-
-> [!IMPORTANT]
-> **Week 4 / Week 5 Isolation Strategy**:
-> - **Week 4 (Immutable Course Submission)**: Preserved on branch `week4-arena` and deployed to Vercel project `humor-project-week4`. The submitted deployment URL remains completely frozen and untouched for course grading.
-> - **Week 5 (Current Evolution)**: Maintained on branch `week5-arena` (or separate Vercel project `humor-project-week5`). All Week 5 experiments, Prompt iterations, and matchmaking upgrades are isolated here without affecting Week 4.
+> **Administrative Operations & Database Management Suite**  
+> Course: COMS 6998: Designing for Generative AI (The Humor Project) • Fall 2026  
+> Author: Junjie Cheng (`jc6002@columbia.edu`)
 
 ---
 
-## What's New in Week 5
+## Overview
 
-1. **Gemini Model Upgrade (`gemini-3-flash-preview`)**:
-   - Upgraded from `gemini-3.1-flash-lite` to **`gemini-3-flash-preview`** (with `thinkingLevel: 'low'`), paired with `gpt-6-luna`.
-   - Max output tokens capped at 400 tokens per call, keeping dual-model generation fast and ultra-low cost (< \$0.08 for 100 battles).
-
-2. **25-Token Structured Schema Micro-CoT (`ai-roast-v3`)**:
-   - Instead of wordy setups, the model JSON schema requires `cliche_to_avoid` (< 8 words) and `comic_twist` (< 12 words) **before** outputting `setup` and `punchline`.
-   - This deterministic pre-planning forces models to bypass obvious clichés (*"context window"*, *"training data"*) and deliver sharp, punchy two-liners (15–42 words).
-
-3. **Single-Click `Next battle →` with Hybrid Matchmaking**:
-   - Removed the separate "Generate" vs "Community Vote" buttons.
-   - When users click `Next battle →`, the server dynamically mixes:
-     - **60% weight**: Existing unvoted community battles (ordered by `votes desc, random()`) so under-voted jokes graduate quickly.
-     - **40% weight**: Fresh random AI roasts picked from a rich server-side scenario bank (`SCENARIOS`).
-     - **Automatic Fallback**: If quota is exhausted or a provider errors, the matchmaker gracefully falls back to community battles without error popups.
-
-4. **Faster Hall-of-Flame Graduation (3-Vote Threshold)**:
-   - Battles close and graduate to the homepage at **3 votes** (reduced from 5), requiring at least 2 decisive votes and majority wins.
-   - Solves the cold-start problem where the homepage Hall of Flame previously remained empty.
-
-5. **Zero-Cognitive-Friction Blind UI**:
-   - Removed manual topic-selection forms; full-width arena auto-loads a matchup on entry.
-   - **Neutral Pre-Vote Styling**: Fixed pre-vote CSS color leaks (Card A/B neutral before voting; GPT green and Gemini blue only reveal after voting).
-   - **Per-Vote Elo Delta**: Displays `(+8)` / `(-8)` next to model Elo scores upon voting.
-   - **3-Second Cooldown & Multi-Skip Array**: Cooldown reduced from 30s to 3s; `p_skip uuid[]` array prevents infinite skipping loops.
+`humor-project-admin` is the dedicated administrative console and telemetry dashboard for **AI Joke Arena**, built for the Week 6 assignment. It provides full database observability, role-based access control, user profile management, AI media CRUD operations, and rating audits.
 
 ---
 
-## Setup & Configuration
+## Technical Implementation & Assignment Rubric Compliance
+
+### 1. Google Login Wall & Role-Based Access Control (`is_superadmin`)
+- **Protected Routes & APIs**: Every route and API endpoint (`/`, `/api/admin/media`) is guarded by `checkSuperadmin()` and `requireSuperadminApi()`.
+- **Authorization Verification**: Queries `public.profiles.is_superadmin === true` via the Supabase Service Role client, preventing any unauthenticated or unauthorized access.
+- **Lockout Resolution (Assignment Question)**:
+  > *Question: If this specific database field is required to use your own admin area, won't you be locked out? How do you solve this problem?*  
+  > **Solution**: Out-of-band privilege bootstrapping. As database owners, we execute a direct SQL statement in the **Supabase Dashboard SQL Editor** (or via the Supabase Service Role API), which bypasses Row-Level Security (RLS) to grant superadmin status:
+  ```sql
+  UPDATE public.profiles
+  SET is_superadmin = TRUE
+  WHERE email = 'jc6002@columbia.edu';
+  ```
+  The included `week6_migration.sql` also automatically bootstraps superadmin status for the earliest user in `auth.users`.
+
+### 2. Rich Data Statistics & Highlights
+- **KPI Summary Grid**:
+  - Registered user count and active superadmin count.
+  - Total battles, generations, and stored AI jokes.
+  - **Decisive Win Rate %** vs. **Groan ("Both missed") Rate %** vs. **Tie Rate %**.
+  - Dual-model average generation latency (ms).
+- **Head-to-Head Model Family Telemetry**: Win share distribution between GPT and Gemini models.
+- **Scenario Angle Breakdown**: Comedy category performance tracking voter preferences across failure modes.
+
+### 3. User & Profile Management (`READ users/profiles`)
+- Real-time table of all user profiles with Google authentication emails, names, avatars, and creation timestamps.
+- Aggregated user engagement telemetry: total battles initiated and total votes cast per user.
+- Visual `Superadmin` badges with RLS escalation protection.
+
+### 4. AI Generated Media Management (`CREATE / READ / UPDATE / DELETE AI generated media`)
+- **CREATE**:
+  - Admin-triggered live generation: orchestrate a head-to-head battle between GPT and Gemini on any custom topic or angle.
+  - Manual media insertion: create custom jokes directly in `ai_jokes`.
+- **READ**:
+  - Live inspection table of all outputs in `arena_generations` and `ai_jokes`.
+  - Displays model snapshot, target, angle, setup, punchline, and generation latency.
+- **UPDATE**:
+  - Inline modal editor to modify setup, punchline, target, angle, or battle status (`ready`, `closed`, `failed`).
+- **DELETE**:
+  - Single-generation purge or complete battle purge (with cascading vote clean-up).
+
+### 5. Upvote / Downvote & Rating Management (`READ upvotes/downvotes/ratings`)
+- Comprehensive audit feed of all user votes (`arena_votes`).
+- Displays voter email/identifier, battle scenario, user preference (`Comedian A`, `Comedian B`, `Tie`, `Both missed`).
+- Shows full punchline context and resulting Bradley-Terry Elo score adjustments (`left_delta`, `right_delta`).
+
+---
+
+## Setup & Local Run
 
 1. Install dependencies:
    ```bash
    npm install
    ```
-2. Copy environment template:
-   ```bash
-   cp .env.example .env.local
-   ```
-3. Set your credentials in `.env.local`:
+
+2. Configure `.env.local`:
    ```env
    SUPABASE_URL=https://your-project.supabase.co
    SUPABASE_ANON_KEY=your-anon-key
@@ -57,33 +76,25 @@ Week 5 evolution of the AI Joke Arena, upgrading model comedic capability, elimi
    OPENAI_API_KEY=sk-...
    GEMINI_API_KEY=AIza...
 
-   OPENAI_MODEL=gpt-6-luna
-   GEMINI_MODEL=gemini-3-flash-preview
+   OPENAI_MODEL=gpt-6-luna,gpt-5.6-luna
+   GEMINI_MODEL=gemini-3-flash-preview,gemini-3.1-flash-lite
    GENERATION_ENABLED=true
    ```
-4. Database migrations:
-   - For fresh databases: Run `supabase/schema.sql`, then `supabase/arena.sql`.
-   - For existing databases: Run `supabase/model-identity.sql`, then apply the updated `supabase/arena.sql`.
-5. Start development server:
+
+3. Run locally:
    ```bash
    npm run dev
    ```
 
----
-
-## Verification & Tests
-
-Run isolated in-memory database and UI flow tests:
-```bash
-npm run test:db        # Tests 3-vote graduation, model identity, Elo replay, RLS
-node tests/battle-flow.mjs # Tests single-click hybrid matchmaker, error recovery
-npm run build          # Verifies Next.js production compilation
-```
+4. Production build test:
+   ```bash
+   npm run build
+   ```
 
 ---
 
-## Deployment & Branching
+## Deployment & Grading Notes
 
-- **Week 4 Branch**: `https://github.com/jc6002/humor-project/tree/week4-arena` (Frozen for submission)
-- **Week 5 Branch**: `https://github.com/jc6002/humor-project/tree/week5-arena`
-- **Vercel**: Deploy Week 5 as a separate project or preview linked to `week5-arena` to guarantee that the Week 4 submission URL remains completely immutable.
+- **Vercel Project**: Create a new project in Vercel importing `humor-project-admin`.
+- **Turn off Vercel Deployment Protection**:
+  Navigate to **Project Settings** -> **Deployment Protection** and ensure **Vercel Authentication** is **Disabled** so grading staff can access the Google login wall in Incognito mode.
