@@ -11,8 +11,8 @@ export async function POST(request: Request) {
     const mode = body.mode ?? 'generate_battle';
 
     if (mode === 'generate_battle') {
-      const target = String(body.target || 'Custom Topic').trim().slice(0, 80);
-      const angle = String(body.angle || 'Admin challenge').trim().slice(0, 100);
+      const target = String(body.target || 'AI Agents').trim().slice(0, 80);
+      const angle = String(body.angle || 'Coding disasters').trim().slice(0, 100);
       const context = String(body.context || 'Admin-triggered live benchmark roast.').trim().slice(0, 280);
       const prompt = buildPrompt(target, angle, context);
 
@@ -43,24 +43,6 @@ export async function POST(request: Request) {
         p_error: null,
       });
       if (finErr) throw new Error(finErr.message);
-
-      const { data: insertedJokes } = await admin!
-        .from('ai_jokes')
-        .insert([
-          {
-            setup: gptJoke.setup,
-            punchline: gptJoke.punchline,
-            category: `${target} · ${angle}`,
-            author: `${gptJoke.name} (${gptJoke.model})`,
-          },
-          {
-            setup: geminiJoke.setup,
-            punchline: geminiJoke.punchline,
-            category: `${target} · ${angle}`,
-            author: `${geminiJoke.name} (${geminiJoke.model})`,
-          },
-        ])
-        .select('*');
 
       const { data: createdGens } = await admin!
         .from('arena_generations')
@@ -93,27 +75,100 @@ export async function POST(request: Request) {
         ok: true,
         battleId: battle.id,
         generations: formattedGens,
-        aiJokes: insertedJokes ?? [],
       });
     }
 
+    // Manual creation into arena_battles + arena_generations so it lives in the unified Arena table
     const setup = String(body.setup ?? '').trim();
     const punchline = String(body.punchline ?? '').trim();
-    const category = String(body.category ?? 'AI Roast').trim();
-    const author = String(body.author ?? 'GPT / Gemini Admin Curated').trim();
+    const target = String(body.target || 'Custom Topic').trim().slice(0, 80);
+    const angle = String(body.angle || 'Admin curated').trim().slice(0, 100);
+    const modelChoice = body.modelName === 'GPT' ? 'GPT' : 'Gemini';
 
     if (!setup || !punchline) {
       throw new Error('Both setup and punchline are required.');
     }
 
-    const { data: created, error } = await admin!
-      .from('ai_jokes')
-      .insert({ setup, punchline, category, author })
+    const { data: allModels } = await admin!
+      .from('arena_models')
+      .select('*')
+      .is('canonical_id', null)
+      .order('rating', { ascending: false });
+
+    const chosenModel =
+      (allModels ?? []).find((m: any) => m.name === modelChoice) ?? (allModels ?? [])[0];
+    const otherModel =
+      (allModels ?? []).find((m: any) => m.id !== chosenModel?.id) ?? chosenModel;
+
+    if (!chosenModel) {
+      throw new Error('No arena_models found in database.');
+    }
+
+    const { data: battle, error: bErr } = await admin!
+      .from('arena_battles')
+      .insert({
+        user_id: user.id,
+        request_id: crypto.randomUUID(),
+        target,
+        angle,
+        context: 'Admin curated joke entry',
+        prompt: 'Admin direct creation',
+        status: 'ready',
+        completed_at: new Date().toISOString(),
+        closes_at: new Date(Date.now() + 7 * 86400 * 1000).toISOString(),
+      })
       .select('*')
       .single();
 
-    if (error) throw new Error(error.message);
-    return Response.json({ ok: true, joke: created });
+    if (bErr || !battle) throw new Error(bErr?.message ?? 'Could not create battle.');
+
+    const { data: insertedGen, error: gErr } = await admin!
+      .from('arena_generations')
+      .insert({
+        battle_id: battle.id,
+        model_id: chosenModel.id,
+        setup,
+        punchline,
+        config_version: chosenModel.config_version || 'ai-roast-v2',
+        latency_ms: 0,
+      })
+      .select('*')
+      .single();
+
+    if (gErr || !insertedGen) throw new Error(gErr?.message ?? 'Could not insert joke.');
+
+    // If there is a second distinct model, also create the paired side so the battle is valid in /arena
+    if (otherModel && otherModel.id !== chosenModel.id && body.pairSetup && body.pairPunchline) {
+      await admin!.from('arena_generations').insert({
+        battle_id: battle.id,
+        model_id: otherModel.id,
+        setup: String(body.pairSetup).trim(),
+        punchline: String(body.pairPunchline).trim(),
+        config_version: otherModel.config_version || 'ai-roast-v2',
+        latency_ms: 0,
+      });
+    }
+
+    return Response.json({
+      ok: true,
+      generations: [
+        {
+          id: insertedGen.id,
+          battle_id: battle.id,
+          model_name: chosenModel.name,
+          model_version: chosenModel.api_model,
+          target,
+          angle,
+          context: battle.context,
+          status: battle.status,
+          votes: 0,
+          setup: insertedGen.setup,
+          punchline: insertedGen.punchline,
+          latency_ms: 0,
+          created_at: battle.created_at,
+        },
+      ],
+    });
   } catch (error) {
     return adminFailure(error);
   }
@@ -123,29 +178,11 @@ export async function PATCH(request: Request) {
   try {
     const { admin } = await requireSuperadminApi(request);
     const body = await request.json();
-    const table = body.table === 'ai_jokes' ? 'ai_jokes' : 'arena_generations';
     const setup = String(body.setup ?? '').trim();
     const punchline = String(body.punchline ?? '').trim();
 
     if (!setup || !punchline) {
       throw new Error('Setup and punchline cannot be empty.');
-    }
-
-    if (table === 'ai_jokes') {
-      const id = Number(body.id);
-      if (!Number.isFinite(id)) throw new Error('Invalid ai_jokes ID.');
-      const category = String(body.category ?? 'AI').trim();
-      const author = String(body.author ?? 'AI Joke Lab').trim();
-
-      const { data: updated, error } = await admin!
-        .from('ai_jokes')
-        .update({ setup, punchline, category, author })
-        .eq('id', id)
-        .select('*')
-        .single();
-
-      if (error) throw new Error(error.message);
-      return Response.json({ ok: true, joke: updated });
     }
 
     const id = String(body.id ?? '');
@@ -180,15 +217,6 @@ export async function DELETE(request: Request) {
   try {
     const { admin } = await requireSuperadminApi(request);
     const body = await request.json();
-    const table = body.table === 'ai_jokes' ? 'ai_jokes' : 'arena_generations';
-
-    if (table === 'ai_jokes') {
-      const id = Number(body.id);
-      if (!Number.isFinite(id)) throw new Error('Invalid ai_jokes ID.');
-      const { error } = await admin!.from('ai_jokes').delete().eq('id', id);
-      if (error) throw new Error(error.message);
-      return Response.json({ ok: true, deletedId: id });
-    }
 
     const id = String(body.id ?? '');
     if (!UUID.test(id)) throw new Error('Invalid generation UUID.');
@@ -201,8 +229,6 @@ export async function DELETE(request: Request) {
 
     if (gErr) throw new Error(gErr.message);
 
-    // Clean up referencing rows in arena_rating_events, arena_votes, and arena_presentations
-    // so Postgres foreign keys without ON DELETE CASCADE never block deletion.
     if (gen?.battle_id) {
       const { data: battleVotes } = await admin!
         .from('arena_votes')
@@ -230,7 +256,6 @@ export async function DELETE(request: Request) {
     const { error: delErr } = await admin!.from('arena_generations').delete().eq('id', id);
     if (delErr) throw new Error(delErr.message);
 
-    // If no generations remain for that battle, clean up the parent battle row too
     if (gen?.battle_id) {
       const { data: remaining } = await admin!
         .from('arena_generations')

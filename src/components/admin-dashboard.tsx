@@ -18,15 +18,6 @@ type GenerationRow = {
   created_at: string | null;
 };
 
-type AiJokeRow = {
-  id: number;
-  setup: string;
-  punchline: string;
-  category: string;
-  author: string;
-  created_at: string;
-};
-
 type Props = {
   adminUser: { id: string; email: string };
   initialData: {
@@ -35,7 +26,7 @@ type Props = {
       superadmins: number;
       totalBattles: number;
       totalGenerations: number;
-      totalAiJokes: number;
+      totalAiJokes?: number;
       totalVotes: number;
       decisiveRate: number;
       groanRate: number;
@@ -62,7 +53,6 @@ type Props = {
       created_at: string;
     }[];
     generations: GenerationRow[];
-    aiJokes: AiJokeRow[];
     votes: {
       id: string;
       created_at: string;
@@ -96,21 +86,16 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
   const router = useRouter();
   const [tab, setTab] = useState<'all' | 'media' | 'analytics' | 'users' | 'votes'>('all');
   const [busy, setBusy] = useState(false);
-  const [deletingKey, setDeletingKey] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
 
-  // Reactive lists so Create / Update / Delete immediately update the UI
+  // Reactive list of Arena AI jokes (public.arena_generations)
   const [generations, setGenerations] = useState<GenerationRow[]>(initialData.generations);
-  const [aiJokes, setAiJokes] = useState<AiJokeRow[]>(initialData.aiJokes);
 
   useEffect(() => {
     setGenerations(initialData.generations);
   }, [initialData.generations]);
-
-  useEffect(() => {
-    setAiJokes(initialData.aiJokes);
-  }, [initialData.aiJokes]);
 
   // Create AI Media state
   const [createMode, setCreateMode] = useState<'generate_battle' | 'manual_generation'>('generate_battle');
@@ -119,12 +104,12 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
   const [newContext, setNewContext] = useState('Columbia CS students debugging a Next.js hydration error at 3 AM');
   const [manualSetup, setManualSetup] = useState('');
   const [manualPunchline, setManualPunchline] = useState('');
-  const [manualCategory, setManualCategory] = useState('AI Roast');
-  const [manualAuthor, setManualAuthor] = useState('GPT-5.6 / Gemini 3 Flash');
+  const [manualTarget, setManualTarget] = useState('Custom Topic');
+  const [manualAngle, setManualAngle] = useState('Admin curated');
+  const [manualModel, setManualModel] = useState<'Gemini' | 'GPT'>('Gemini');
 
   // Inline row edit state
-  const [editingId, setEditingId] = useState<string | number | null>(null);
-  const [editingTable, setEditingTable] = useState<'arena_generations' | 'ai_jokes'>('arena_generations');
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [editSetup, setEditSetup] = useState('');
   const [editPunchline, setEditPunchline] = useState('');
   const [editTarget, setEditTarget] = useState('');
@@ -163,24 +148,22 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
         if (Array.isArray(res.generations) && res.generations.length > 0) {
           setGenerations((prev) => [...res.generations, ...prev]);
         }
-        if (Array.isArray(res.aiJokes) && res.aiJokes.length > 0) {
-          setAiJokes((prev) => [...res.aiJokes, ...prev]);
-        }
-        showToast('✓ Generated a fresh GPT vs. Gemini battle and saved both AI jokes to the database!');
+        showToast('✓ Generated a fresh GPT vs. Gemini battle and saved both AI jokes to arena_generations!');
       } else {
         const res = await adminApi('POST', {
           mode: 'manual_generation',
           setup: manualSetup,
           punchline: manualPunchline,
-          category: manualCategory,
-          author: manualAuthor,
+          target: manualTarget,
+          angle: manualAngle,
+          modelName: manualModel,
         });
-        if (res.joke) {
-          setAiJokes((prev) => [res.joke, ...prev]);
+        if (Array.isArray(res.generations) && res.generations.length > 0) {
+          setGenerations((prev) => [...res.generations, ...prev]);
         }
         setManualSetup('');
         setManualPunchline('');
-        showToast('✓ Created new AI joke entry in the database!');
+        showToast('✓ Created new AI joke in arena_generations!');
       }
       router.refresh();
     } catch (err) {
@@ -192,21 +175,11 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
 
   function startEditGen(g: GenerationRow) {
     setEditingId(g.id);
-    setEditingTable('arena_generations');
     setEditSetup(g.setup);
     setEditPunchline(g.punchline);
     setEditTarget(g.target);
     setEditAngle(g.angle);
     setEditStatus(g.status);
-  }
-
-  function startEditAiJoke(j: AiJokeRow) {
-    setEditingId(j.id);
-    setEditingTable('ai_jokes');
-    setEditSetup(j.setup);
-    setEditPunchline(j.punchline);
-    setEditTarget(j.category);
-    setEditAngle(j.author);
   }
 
   async function handleSaveInlineEdit() {
@@ -215,56 +188,30 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
     setError('');
     setNotice('');
     try {
-      if (editingTable === 'arena_generations') {
-        await adminApi('PATCH', {
-          table: 'arena_generations',
-          id: editingId,
-          setup: editSetup,
-          punchline: editPunchline,
-          target: editTarget,
-          angle: editAngle,
-          status: editStatus,
-        });
-        setGenerations((prev) =>
-          prev.map((g) =>
-            g.id === editingId
-              ? {
-                  ...g,
-                  setup: editSetup.trim(),
-                  punchline: editPunchline.trim(),
-                  target: editTarget.trim() || g.target,
-                  angle: editAngle.trim() || g.angle,
-                  status: editStatus,
-                }
-              : g
-          )
-        );
-        showToast('✓ Updated Arena AI joke in database.');
-      } else {
-        await adminApi('PATCH', {
-          table: 'ai_jokes',
-          id: editingId,
-          setup: editSetup,
-          punchline: editPunchline,
-          category: editTarget,
-          author: editAngle,
-        });
-        setAiJokes((prev) =>
-          prev.map((j) =>
-            j.id === Number(editingId)
-              ? {
-                  ...j,
-                  setup: editSetup.trim(),
-                  punchline: editPunchline.trim(),
-                  category: editTarget.trim() || j.category,
-                  author: editAngle.trim() || j.author,
-                }
-              : j
-          )
-        );
-        showToast(`✓ Updated AI Joke #${editingId} in database.`);
-      }
+      await adminApi('PATCH', {
+        id: editingId,
+        setup: editSetup,
+        punchline: editPunchline,
+        target: editTarget,
+        angle: editAngle,
+        status: editStatus,
+      });
+      setGenerations((prev) =>
+        prev.map((g) =>
+          g.id === editingId
+            ? {
+                ...g,
+                setup: editSetup.trim(),
+                punchline: editPunchline.trim(),
+                target: editTarget.trim() || g.target,
+                angle: editAngle.trim() || g.angle,
+                status: editStatus,
+              }
+            : g
+        )
+      );
       setEditingId(null);
+      showToast('✓ Updated AI joke in arena_generations.');
       router.refresh();
     } catch (err) {
       showToast((err as Error).message, true);
@@ -273,27 +220,21 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
     }
   }
 
-  async function handleDelete(table: 'arena_generations' | 'ai_jokes', id: string | number) {
-    const key = `${table}:${id}`;
-    setDeletingKey(key);
+  async function handleDelete(id: string) {
+    setDeletingId(id);
     setBusy(true);
     setError('');
     setNotice('');
     try {
-      await adminApi('DELETE', { table, id });
-      if (table === 'arena_generations') {
-        setGenerations((prev) => prev.filter((g) => g.id !== String(id)));
-        showToast('✓ Deleted Arena AI joke from database.');
-      } else {
-        setAiJokes((prev) => prev.filter((j) => j.id !== Number(id)));
-        showToast(`✓ Deleted AI Joke #${id} from database.`);
-      }
+      await adminApi('DELETE', { id });
+      setGenerations((prev) => prev.filter((g) => g.id !== id));
       if (editingId === id) setEditingId(null);
+      showToast('✓ Deleted AI joke from arena_generations.');
       router.refresh();
     } catch (err) {
       showToast((err as Error).message, true);
     } finally {
-      setDeletingKey(null);
+      setDeletingId(null);
       setBusy(false);
     }
   }
@@ -312,14 +253,6 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
       g.target.toLowerCase().includes(mediaSearch.toLowerCase()) ||
       g.angle.toLowerCase().includes(mediaSearch.toLowerCase()) ||
       g.model_name.toLowerCase().includes(mediaSearch.toLowerCase())
-  );
-
-  const filteredAiJokes = aiJokes.filter(
-    (j) =>
-      j.setup.toLowerCase().includes(mediaSearch.toLowerCase()) ||
-      j.punchline.toLowerCase().includes(mediaSearch.toLowerCase()) ||
-      j.category.toLowerCase().includes(mediaSearch.toLowerCase()) ||
-      j.author.toLowerCase().includes(mediaSearch.toLowerCase())
   );
 
   const gptWins = models.filter((m) => m.name === 'GPT').reduce((acc, m) => acc + (m.wins ?? 0), 0);
@@ -387,10 +320,8 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
         </div>
         <div className="admin-kpi-card">
           <span className="eyebrow">AI GENERATED JOKES</span>
-          <strong>{generations.length + aiJokes.length}</strong>
-          <small>
-            {generations.length} arena outputs · {aiJokes.length} lab jokes
-          </small>
+          <strong>{generations.length}</strong>
+          <small>{summary.totalBattles} arena battles in database</small>
         </div>
         <div className="admin-kpi-card">
           <span className="eyebrow">VOTES &amp; RATINGS</span>
@@ -418,7 +349,7 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
           className={`admin-tab ${tab === 'media' ? 'active' : ''}`}
           onClick={() => setTab('media')}
         >
-          1 · AI Media CRUD ({generations.length + aiJokes.length} Jokes)
+          1 · AI Media CRUD ({generations.length} Jokes)
         </button>
         <button
           type="button"
@@ -453,8 +384,8 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
           <form className="admin-panel-box" onSubmit={handleCreateMedia}>
             <div className="custom-topic-header">
               <div>
-                <p className="eyebrow">CREATE AI GENERATED MEDIA (POST /api/admin/media)</p>
-                <h3>Create New AI Joke or Trigger Live GPT vs. Gemini Generation</h3>
+                <p className="eyebrow">CREATE AI GENERATED MEDIA (public.arena_generations)</p>
+                <h3>Generate Live GPT vs. Gemini Battle or Insert Custom Joke</h3>
               </div>
               <div className="premise-badges">
                 <button
@@ -469,7 +400,7 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
                   className={`topic-chip ${createMode === 'manual_generation' ? 'chip-active' : ''}`}
                   onClick={() => setCreateMode('manual_generation')}
                 >
-                  Direct DB Entry (ai_jokes)
+                  Manual Joke Entry
                 </button>
               </div>
             </div>
@@ -503,6 +434,21 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
               </div>
             ) : (
               <div className="admin-form-grid">
+                <select
+                  className="custom-topic-input"
+                  value={manualModel}
+                  onChange={(e) => setManualModel(e.target.value as 'Gemini' | 'GPT')}
+                >
+                  <option value="Gemini">Model: Gemini</option>
+                  <option value="GPT">Model: GPT</option>
+                </select>
+                <input
+                  className="custom-topic-input"
+                  placeholder="Topic (e.g., AI Agents, Custom Topic)"
+                  value={manualTarget}
+                  onChange={(e) => setManualTarget(e.target.value)}
+                  required
+                />
                 <input
                   className="custom-topic-input"
                   placeholder="Joke Setup (1 crisp sentence)"
@@ -517,13 +463,6 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
                   onChange={(e) => setManualPunchline(e.target.value)}
                   required
                 />
-                <input
-                  className="custom-topic-input"
-                  placeholder="Category (e.g., LLM, AI Agents)"
-                  value={manualCategory}
-                  onChange={(e) => setManualCategory(e.target.value)}
-                  required
-                />
                 <button type="submit" className="button" disabled={busy}>
                   + Insert AI Joke →
                 </button>
@@ -531,12 +470,12 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
             )}
           </form>
 
-          {/* ARENA AI GENERATIONS TABLE (READ / INLINE UPDATE / DELETE ON EVERY JOKE) */}
+          {/* UNIFIED ARENA AI GENERATIONS TABLE (READ / INLINE UPDATE / DELETE ON EVERY JOKE) */}
           <div className="admin-panel-box">
             <div className="custom-topic-header">
               <div>
-                <p className="eyebrow">READ · UPDATE · DELETE ARENA JOKES (public.arena_generations)</p>
-                <h3>Arena AI Generated Jokes ({filteredGenerations.length})</h3>
+                <p className="eyebrow">READ · UPDATE · DELETE AI GENERATED MEDIA (public.arena_generations)</p>
+                <h3>All AI Generated Jokes ({filteredGenerations.length})</h3>
               </div>
               <input
                 className="custom-topic-input"
@@ -559,8 +498,8 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
                 </thead>
                 <tbody>
                   {filteredGenerations.map((g) => {
-                    const isEditing = editingTable === 'arena_generations' && editingId === g.id;
-                    const isDeleting = deletingKey === `arena_generations:${g.id}`;
+                    const isEditing = editingId === g.id;
+                    const isDeleting = deletingId === g.id;
                     return (
                       <tr key={g.id} style={isEditing ? { background: '#1c2416' } : undefined}>
                         <td>
@@ -685,135 +624,8 @@ export function AdminDashboard({ adminUser, initialData }: Props) {
                               <button
                                 type="button"
                                 className="topic-chip chip-danger"
-                                onClick={() => handleDelete('arena_generations', g.id)}
+                                onClick={() => handleDelete(g.id)}
                                 disabled={busy}
-                              >
-                                {isDeleting ? 'Deleting…' : '🗑 Delete'}
-                              </button>
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* AI JOKE LAB CATALOG TABLE (public.ai_jokes — INLINE EDIT & DELETE) */}
-          <div className="admin-panel-box">
-            <div>
-              <p className="eyebrow">READ · UPDATE · DELETE CURATED JOKES (public.ai_jokes)</p>
-              <h3>AI Joke Lab Catalog — public.ai_jokes ({filteredAiJokes.length})</h3>
-            </div>
-            <div className="table-scroll">
-              <table className="ranking-table" style={{ whiteSpace: 'normal' }}>
-                <thead>
-                  <tr>
-                    <th style={{ width: 70 }}>ID</th>
-                    <th style={{ width: 200 }}>CATEGORY / AUTHOR</th>
-                    <th>JOKE (SETUP &amp; PUNCHLINE)</th>
-                    <th style={{ width: 190 }}>UPDATE / DELETE</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredAiJokes.map((j) => {
-                    const isEditing = editingTable === 'ai_jokes' && editingId === j.id;
-                    const isDeleting = deletingKey === `ai_jokes:${j.id}`;
-                    return (
-                      <tr key={j.id} style={isEditing ? { background: '#1c2416' } : undefined}>
-                        <td className="rank-number">#{j.id}</td>
-                        <td>
-                          {isEditing ? (
-                            <div style={{ display: 'grid', gap: 6 }}>
-                              <input
-                                className="custom-topic-input"
-                                style={{ minWidth: 130, padding: '6px 9px', fontSize: 12 }}
-                                value={editTarget}
-                                onChange={(e) => setEditTarget(e.target.value)}
-                                placeholder="Category"
-                              />
-                              <input
-                                className="custom-topic-input"
-                                style={{ minWidth: 130, padding: '6px 9px', fontSize: 12 }}
-                                value={editAngle}
-                                onChange={(e) => setEditAngle(e.target.value)}
-                                placeholder="Author"
-                              />
-                            </div>
-                          ) : (
-                            <>
-                              <span className="target-tag">{j.category}</span>
-                              <br />
-                              <small style={{ color: 'var(--muted)', display: 'inline-block', marginTop: 6 }}>
-                                {j.author}
-                              </small>
-                            </>
-                          )}
-                        </td>
-                        <td>
-                          {isEditing ? (
-                            <div style={{ display: 'grid', gap: 8 }}>
-                              <input
-                                className="custom-topic-input"
-                                style={{ width: '100%', padding: '8px 10px', fontSize: 13 }}
-                                value={editSetup}
-                                onChange={(e) => setEditSetup(e.target.value)}
-                                placeholder="Joke setup"
-                              />
-                              <input
-                                className="custom-topic-input"
-                                style={{ width: '100%', padding: '8px 10px', fontSize: 13, fontWeight: 600 }}
-                                value={editPunchline}
-                                onChange={(e) => setEditPunchline(e.target.value)}
-                                placeholder="Joke punchline"
-                              />
-                            </div>
-                          ) : (
-                            <>
-                              <p style={{ margin: '0 0 6px', color: '#cfd6c6', lineHeight: 1.5 }}>{j.setup}</p>
-                              <p style={{ margin: 0, color: '#ffffff', fontWeight: 700, lineHeight: 1.5 }}>
-                                {j.punchline}
-                              </p>
-                            </>
-                          )}
-                        </td>
-                        <td>
-                          {isEditing ? (
-                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                              <button
-                                type="button"
-                                className="button button-small"
-                                disabled={busy}
-                                onClick={handleSaveInlineEdit}
-                              >
-                                💾 Save
-                              </button>
-                              <button
-                                type="button"
-                                className="topic-chip"
-                                disabled={busy}
-                                onClick={() => setEditingId(null)}
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          ) : (
-                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                              <button
-                                type="button"
-                                className="topic-chip"
-                                disabled={busy}
-                                onClick={() => startEditAiJoke(j)}
-                              >
-                                ✏️ Edit Joke
-                              </button>
-                              <button
-                                type="button"
-                                className="topic-chip chip-danger"
-                                disabled={busy}
-                                onClick={() => handleDelete('ai_jokes', j.id)}
                               >
                                 {isDeleting ? 'Deleting…' : '🗑 Delete'}
                               </button>
