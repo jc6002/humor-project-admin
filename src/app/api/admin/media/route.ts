@@ -44,22 +44,57 @@ export async function POST(request: Request) {
       });
       if (finErr) throw new Error(finErr.message);
 
-      await admin!.from('ai_jokes').insert([
-        {
-          setup: gptJoke.setup,
-          punchline: gptJoke.punchline,
-          category: `${target} · ${angle}`,
-          author: `${gptJoke.name} (${gptJoke.model})`,
-        },
-        {
-          setup: geminiJoke.setup,
-          punchline: geminiJoke.punchline,
-          category: `${target} · ${angle}`,
-          author: `${geminiJoke.name} (${geminiJoke.model})`,
-        },
-      ]);
+      const { data: insertedJokes } = await admin!
+        .from('ai_jokes')
+        .insert([
+          {
+            setup: gptJoke.setup,
+            punchline: gptJoke.punchline,
+            category: `${target} · ${angle}`,
+            author: `${gptJoke.name} (${gptJoke.model})`,
+          },
+          {
+            setup: geminiJoke.setup,
+            punchline: geminiJoke.punchline,
+            category: `${target} · ${angle}`,
+            author: `${geminiJoke.name} (${geminiJoke.model})`,
+          },
+        ])
+        .select('*');
 
-      return Response.json({ ok: true, battleId: battle.id });
+      const { data: createdGens } = await admin!
+        .from('arena_generations')
+        .select('*')
+        .eq('battle_id', battle.id);
+
+      const { data: allModels } = await admin!.from('arena_models').select('*');
+      const modelById = new Map((allModels ?? []).map((m: any) => [m.id, m]));
+
+      const formattedGens = (createdGens ?? []).map((g: any) => {
+        const m = modelById.get(g.model_id);
+        return {
+          id: g.id,
+          battle_id: battle.id,
+          model_name: m?.name ?? 'AI',
+          model_version: m?.api_model ?? '',
+          target,
+          angle,
+          context,
+          status: 'ready',
+          votes: 0,
+          setup: g.setup,
+          punchline: g.punchline,
+          latency_ms: g.latency_ms ?? null,
+          created_at: battle.created_at,
+        };
+      });
+
+      return Response.json({
+        ok: true,
+        battleId: battle.id,
+        generations: formattedGens,
+        aiJokes: insertedJokes ?? [],
+      });
     }
 
     const setup = String(body.setup ?? '').trim();
@@ -102,13 +137,15 @@ export async function PATCH(request: Request) {
       const category = String(body.category ?? 'AI').trim();
       const author = String(body.author ?? 'AI Joke Lab').trim();
 
-      const { error } = await admin!
+      const { data: updated, error } = await admin!
         .from('ai_jokes')
         .update({ setup, punchline, category, author })
-        .eq('id', id);
+        .eq('id', id)
+        .select('*')
+        .single();
 
       if (error) throw new Error(error.message);
-      return Response.json({ ok: true });
+      return Response.json({ ok: true, joke: updated });
     }
 
     const id = String(body.id ?? '');
@@ -133,7 +170,7 @@ export async function PATCH(request: Request) {
       }
     }
 
-    return Response.json({ ok: true });
+    return Response.json({ ok: true, id });
   } catch (error) {
     return adminFailure(error);
   }
@@ -150,7 +187,7 @@ export async function DELETE(request: Request) {
       if (!Number.isFinite(id)) throw new Error('Invalid ai_jokes ID.');
       const { error } = await admin!.from('ai_jokes').delete().eq('id', id);
       if (error) throw new Error(error.message);
-      return Response.json({ ok: true });
+      return Response.json({ ok: true, deletedId: id });
     }
 
     const id = String(body.id ?? '');
@@ -164,15 +201,47 @@ export async function DELETE(request: Request) {
 
     if (gErr) throw new Error(gErr.message);
 
-    if (body.deleteEntireBattle && gen?.battle_id) {
-      const { error: bDelErr } = await admin!.from('arena_battles').delete().eq('id', gen.battle_id);
-      if (bDelErr) throw new Error(bDelErr.message);
-      return Response.json({ ok: true, deletedBattle: gen.battle_id });
+    // Clean up referencing rows in arena_rating_events, arena_votes, and arena_presentations
+    // so Postgres foreign keys without ON DELETE CASCADE never block deletion.
+    if (gen?.battle_id) {
+      const { data: battleVotes } = await admin!
+        .from('arena_votes')
+        .select('id')
+        .eq('battle_id', gen.battle_id);
+      const voteIds = (battleVotes ?? []).map((v: any) => v.id);
+      if (voteIds.length > 0) {
+        await admin!.from('arena_rating_events').delete().in('vote_id', voteIds);
+      }
+      await admin!.from('arena_votes').delete().eq('battle_id', gen.battle_id);
+      await admin!.from('arena_presentations').delete().eq('battle_id', gen.battle_id);
+    } else {
+      const { data: genVotes } = await admin!
+        .from('arena_votes')
+        .select('id')
+        .or(`left_id.eq.${id},right_id.eq.${id}`);
+      const voteIds = (genVotes ?? []).map((v: any) => v.id);
+      if (voteIds.length > 0) {
+        await admin!.from('arena_rating_events').delete().in('vote_id', voteIds);
+        await admin!.from('arena_votes').delete().in('id', voteIds);
+      }
+      await admin!.from('arena_presentations').delete().or(`left_id.eq.${id},right_id.eq.${id}`);
     }
 
     const { error: delErr } = await admin!.from('arena_generations').delete().eq('id', id);
     if (delErr) throw new Error(delErr.message);
-    return Response.json({ ok: true });
+
+    // If no generations remain for that battle, clean up the parent battle row too
+    if (gen?.battle_id) {
+      const { data: remaining } = await admin!
+        .from('arena_generations')
+        .select('id')
+        .eq('battle_id', gen.battle_id);
+      if (!remaining || remaining.length === 0) {
+        await admin!.from('arena_battles').delete().eq('id', gen.battle_id);
+      }
+    }
+
+    return Response.json({ ok: true, deletedId: id });
   } catch (error) {
     return adminFailure(error);
   }

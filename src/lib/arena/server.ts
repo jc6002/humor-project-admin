@@ -30,9 +30,19 @@ export async function session() {
 }
 
 export function checkOrigin(request: Request) {
+  if (!request.headers.get('content-type')?.startsWith('application/json')) {
+    throw new Error('JSON is required.');
+  }
   const origin = request.headers.get('origin');
-  if (!origin || origin !== new URL(request.url).origin) throw new Error('Request origin is not allowed.');
-  if (!request.headers.get('content-type')?.startsWith('application/json')) throw new Error('JSON is required.');
+  if (!origin) return;
+  const originHost = new URL(origin).host;
+  const reqHost =
+    request.headers.get('x-forwarded-host') ||
+    request.headers.get('host') ||
+    new URL(request.url).host;
+  if (originHost !== reqHost) {
+    throw new Error('Request origin is not allowed.');
+  }
 }
 
 export function failure(error: unknown) {
