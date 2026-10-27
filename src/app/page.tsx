@@ -4,8 +4,12 @@ import { AdminDashboard } from '@/components/admin-dashboard';
 
 export const dynamic = 'force-dynamic';
 
-export default async function AdminHomePage() {
-  const gate = await checkSuperadmin();
+export default async function AdminHomePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ authError?: string }>;
+}) {
+  const [{ authError }, gate] = await Promise.all([searchParams, checkSuperadmin()]);
 
   return (
     <div className="site-shell">
@@ -34,6 +38,16 @@ export default async function AdminHomePage() {
       </header>
 
       <main>
+        {authError === 'domain_restricted' && (
+          <p className="error-message" role="alert" style={{ marginTop: 22 }}>
+            Sign-in restricted: your account’s email domain is not in the Allowed Signup Domains list or Whitelisted E-mail Addresses.
+          </p>
+        )}
+        {authError === 'signin' && (
+          <p className="error-message" role="alert" style={{ marginTop: 22 }}>
+            Google sign-in could not be started right now. Please try again.
+          </p>
+        )}
         {gate.status === 'unauthenticated' ? (
           <div className="battle-empty" style={{ maxWidth: 640, margin: '60px auto' }}>
             <span className="versus">🔒</span>
@@ -66,8 +80,8 @@ export default async function AdminHomePage() {
         )}
       </main>
       <footer className="site-footer">
-        <span>AI Joke Arena · Superadmin Control Center</span>
-        <span>The Humor Project · Week 6</span>
+        <span>AI Joke Arena · Superadmin Observability Console</span>
+        <span>The Humor Project · Week 7</span>
         <span>Protected by Google OAuth + profiles.is_superadmin</span>
       </footer>
     </div>

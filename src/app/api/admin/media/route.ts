@@ -1,5 +1,5 @@
 import { requireSuperadminApi, adminFailure } from '@/lib/admin/server';
-import { buildPrompt, generateJoke } from '@/lib/arena/providers';
+import { generateJoke, resolveDynamicGenerationPlan } from '@/lib/arena/providers';
 import { UUID } from '@/lib/arena/server';
 
 export const maxDuration = 60;
@@ -14,17 +14,25 @@ export async function POST(request: Request) {
       const target = String(body.target || 'AI Agents').trim().slice(0, 80);
       const angle = String(body.angle || 'Coding disasters').trim().slice(0, 100);
       const context = String(body.context || 'Admin-triggered live benchmark roast.').trim().slice(0, 280);
-      const prompt = buildPrompt(target, angle, context);
+      const reqId = crypto.randomUUID();
+      const plan = await resolveDynamicGenerationPlan(admin!, target, angle, context);
+      if (plan.disabledProviders && plan.disabledProviders.length > 0) {
+        throw new Error(
+          `Cannot run live battle while LLM provider (${plan.disabledProviders.join(', ')}) is disabled in Tab 3.`
+        );
+      }
 
       const { data: battle, error: bErr } = await admin!
         .from('arena_battles')
         .insert({
           user_id: user.id,
-          request_id: crypto.randomUUID(),
+          request_id: reqId,
           target,
           angle,
           context,
-          prompt,
+          prompt: plan.prompt,
+          prompt_chain_id: plan.chainId,
+          prompt_chain_name: plan.chainName,
           status: 'generating',
         })
         .select('*')
@@ -33,8 +41,14 @@ export async function POST(request: Request) {
       if (bErr || !battle) throw new Error(bErr?.message ?? 'Could not create battle record.');
 
       const [gptJoke, geminiJoke] = await Promise.all([
-        generateJoke('openai', prompt),
-        generateJoke('gemini', prompt),
+        generateJoke('openai', plan.prompt, plan.openaiModelOverride, {
+          maxTokens: plan.openaiMaxTokens,
+          promptChainName: plan.chainName,
+        }),
+        generateJoke('gemini', plan.prompt, plan.geminiModelOverride, {
+          maxTokens: plan.geminiMaxTokens,
+          promptChainName: plan.chainName,
+        }),
       ]);
 
       const { error: finErr } = await admin!.rpc('arena_finish', {
@@ -48,6 +62,39 @@ export async function POST(request: Request) {
         .from('arena_generations')
         .select('*')
         .eq('battle_id', battle.id);
+
+      try {
+        const traces = [gptJoke, geminiJoke].map((val) => {
+          const matched = (createdGens ?? []).find(
+            (g: any) => g.setup === val.setup && g.punchline === val.punchline
+          );
+          return {
+            battle_id: battle.id,
+            generation_id: matched?.id ?? null,
+            request_id: reqId,
+            provider: val.provider,
+            model: val.model,
+            prompt_chain_name: plan.chainName,
+            prompt_text: plan.prompt,
+            raw_response_text: val.rawResponseText,
+            parsed_cliche_to_avoid: val.clicheToAvoid,
+            parsed_comic_twist: val.comicTwist,
+            parsed_setup: val.setup,
+            parsed_punchline: val.punchline,
+            status: 'success',
+            http_status: val.httpStatus,
+            latency_ms: val.latencyMs,
+            input_tokens: val.inputTokens,
+            output_tokens: val.outputTokens,
+            reasoning_tokens: val.reasoningTokens,
+            provider_request_id: val.requestId,
+            usage: val.usage ?? {},
+          };
+        });
+        await admin!.from('llm_responses').insert(traces);
+      } catch {
+        // non-blocking
+      }
 
       const { data: allModels } = await admin!.from('arena_models').select('*');
       const modelById = new Map((allModels ?? []).map((m: any) => [m.id, m]));
@@ -66,6 +113,10 @@ export async function POST(request: Request) {
           votes: 0,
           setup: g.setup,
           punchline: g.punchline,
+          cliche_to_avoid: g.cliche_to_avoid ?? null,
+          comic_twist: g.comic_twist ?? null,
+          prompt_chain_name: plan.chainName,
+          usage: g.usage ?? {},
           latency_ms: g.latency_ms ?? null,
           created_at: battle.created_at,
         };
@@ -78,7 +129,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // Manual creation into arena_battles + arena_generations so it lives in the unified Arena table
     const setup = String(body.setup ?? '').trim();
     const punchline = String(body.punchline ?? '').trim();
     const target = String(body.target || 'Custom Topic').trim().slice(0, 80);
@@ -97,8 +147,6 @@ export async function POST(request: Request) {
 
     const chosenModel =
       (allModels ?? []).find((m: any) => m.name === modelChoice) ?? (allModels ?? [])[0];
-    const otherModel =
-      (allModels ?? []).find((m: any) => m.id !== chosenModel?.id) ?? chosenModel;
 
     if (!chosenModel) {
       throw new Error('No arena_models found in database.');
@@ -113,9 +161,10 @@ export async function POST(request: Request) {
         angle,
         context: 'Admin curated joke entry',
         prompt: 'Admin direct creation',
-        status: 'ready',
+        prompt_chain_name: 'Admin Curated',
+        status: 'closed',
         completed_at: new Date().toISOString(),
-        closes_at: new Date(Date.now() + 7 * 86400 * 1000).toISOString(),
+        closes_at: new Date().toISOString(),
       })
       .select('*')
       .single();
@@ -129,25 +178,14 @@ export async function POST(request: Request) {
         model_id: chosenModel.id,
         setup,
         punchline,
-        config_version: chosenModel.config_version || 'ai-roast-v2',
+        prompt_chain_name: 'Admin Curated',
+        config_version: chosenModel.config_version || 'ai-roast-v3',
         latency_ms: 0,
       })
       .select('*')
       .single();
 
     if (gErr || !insertedGen) throw new Error(gErr?.message ?? 'Could not insert joke.');
-
-    // If there is a second distinct model, also create the paired side so the battle is valid in /arena
-    if (otherModel && otherModel.id !== chosenModel.id && body.pairSetup && body.pairPunchline) {
-      await admin!.from('arena_generations').insert({
-        battle_id: battle.id,
-        model_id: otherModel.id,
-        setup: String(body.pairSetup).trim(),
-        punchline: String(body.pairPunchline).trim(),
-        config_version: otherModel.config_version || 'ai-roast-v2',
-        latency_ms: 0,
-      });
-    }
 
     return Response.json({
       ok: true,
@@ -164,6 +202,10 @@ export async function POST(request: Request) {
           votes: 0,
           setup: insertedGen.setup,
           punchline: insertedGen.punchline,
+          cliche_to_avoid: null,
+          comic_twist: null,
+          prompt_chain_name: 'Admin Curated',
+          usage: {},
           latency_ms: 0,
           created_at: battle.created_at,
         },
@@ -263,6 +305,8 @@ export async function DELETE(request: Request) {
         .eq('battle_id', gen.battle_id);
       if (!remaining || remaining.length === 0) {
         await admin!.from('arena_battles').delete().eq('id', gen.battle_id);
+      } else if (remaining.length < 2) {
+        await admin!.from('arena_battles').update({ status: 'closed' }).eq('id', gen.battle_id);
       }
     }
 

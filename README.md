@@ -1,54 +1,38 @@
-# AI Joke Arena — Week 5
+# AI Joke Arena — Week 7 Superadmin & Observability Console
 
-Week 5 evolution of the AI Joke Arena, upgrading model comedic capability, eliminating user friction with hybrid matchmaking, and accelerating Hall-of-Flame leaderboard graduation.
-
-> [!IMPORTANT]
-> **Week 4 / Week 5 Isolation Strategy**:
-> - **Week 4 (Immutable Course Submission)**: Preserved on branch `week4-arena` and deployed to Vercel project `humor-project-week4`. The submitted deployment URL remains completely frozen and untouched for course grading.
-> - **Week 5 (Current Evolution)**: Maintained on branch `week5-arena` (or separate Vercel project `humor-project-week5`). All Week 5 experiments, Prompt iterations, and matchmaking upgrades are isolated here without affecting Week 4.
+Dedicated Superadmin & LLM Observability Console (`humor-project-admin`) for the **AI Joke Arena** (`humor-project`), protected behind Google OAuth and `public.profiles.is_superadmin == TRUE`.
 
 ---
 
-## What's New in Week 5
+## Week 7 Capability Coverage (13 / 13)
 
-1. **Gemini Model Upgrade (`gemini-3-flash-preview`)**:
-   - Upgraded from `gemini-3.1-flash-lite` to **`gemini-3-flash-preview`** (with `thinkingLevel: 'low'`), paired with `gpt-6-luna`.
-   - Max output tokens capped at 400 tokens per call, keeping dual-model generation fast and ultra-low cost (< \$0.08 for 100 battles).
+| # | Week 7 Requirement | Backing Table(s) | Admin Workspace |
+|---|---|---|---|
+| 1 | **Read users** | `public.profiles` + `auth.users` | Tab 5 · Users, Domains & Whitelist |
+| 2 | **Read prompt chains** | `public.prompt_chains` | Tab 2 · Prompt Chains, Mix, Terms & Examples |
+| 3 | **Read prompt chain steps** | `public.prompt_chain_steps` | Tab 2 · Prompt Chains, Mix, Terms & Examples |
+| 4 | **Read / update prompt chain mix** | `public.prompt_chains` (`mix_weight`, `is_active`) | Tab 2 · Prompt Chains, Mix, Terms & Examples |
+| 5 | **CRUD terms** | `public.comedy_terms` | Tab 2 · Prompt Chains, Mix, Terms & Examples |
+| 6 | **Read / view (+ CRUD) AI generated media** | `public.arena_generations` | Tab 4 · AI Media & Votes (`👁 View` trace drawer + `✏️ Edit` + `🗑 Delete` + `+ Create`) |
+| 7 | **Read generation requests** | `public.arena_battles` | Tab 1 · Observability & LLM Traces (`👁 Prompt` inspector) |
+| 8 | **CRUD AI generation examples** | `public.ai_generation_examples` | Tab 2 · Prompt Chains, Mix, Terms & Examples |
+| 9 | **CRUD LLM models** | `public.arena_models` | Tab 3 · LLM Providers & Models |
+| 10 | **CRUD LLM providers** | `public.llm_providers` | Tab 3 · LLM Providers & Models |
+| 11 | **Read LLM responses** | `public.llm_responses` | Tab 1 · Observability & LLM Traces (`👁 Raw JSON`, latency, HTTP status, token counts) |
+| 12 | **CRUD allowed signup domains** | `public.allowed_signup_domains` | Tab 5 · Users, Domains & Whitelist |
+| 13 | **CRUD whitelisted e-mail addresses** | `public.whitelisted_emails` | Tab 5 · Users, Domains & Whitelist |
 
-2. **25-Token Structured Schema Micro-CoT (`ai-roast-v3`)**:
-   - Instead of wordy setups, the model JSON schema requires `cliche_to_avoid` (< 8 words) and `comic_twist` (< 12 words) **before** outputting `setup` and `punchline`.
-   - This deterministic pre-planning forces models to bypass obvious clichés (*"context window"*, *"training data"*) and deliver sharp, punchy two-liners (15–42 words).
-
-3. **Single-Click `Next battle →` with Hybrid Matchmaking**:
-   - Removed the separate "Generate" vs "Community Vote" buttons.
-   - When users click `Next battle →`, the server dynamically mixes:
-     - **60% weight**: Existing unvoted community battles (ordered by `votes desc, random()`) so under-voted jokes graduate quickly.
-     - **40% weight**: Fresh random AI roasts picked from a rich server-side scenario bank (`SCENARIOS`).
-     - **Automatic Fallback**: If quota is exhausted or a provider errors, the matchmaker gracefully falls back to community battles without error popups.
-
-4. **Faster Hall-of-Flame Graduation (3-Vote Threshold)**:
-   - Battles close and graduate to the homepage at **3 votes** (reduced from 5), requiring at least 2 decisive votes and majority wins.
-   - Solves the cold-start problem where the homepage Hall of Flame previously remained empty.
-
-5. **Zero-Cognitive-Friction Blind UI**:
-   - Removed manual topic-selection forms; full-width arena auto-loads a matchup on entry.
-   - **Neutral Pre-Vote Styling**: Fixed pre-vote CSS color leaks (Card A/B neutral before voting; GPT green and Gemini blue only reveal after voting).
-   - **Per-Vote Elo Delta**: Displays `(+8)` / `(-8)` next to model Elo scores upon voting.
-   - **3-Second Cooldown & Multi-Skip Array**: Cooldown reduced from 30s to 3s; `p_skip uuid[]` array prevents infinite skipping loops.
+*(Note: AI Joke Arena is a text-only 1v1 blind joke generation & rating platform without user image uploads.)*
 
 ---
 
-## Setup & Configuration
+## Setup & Deployment
 
 1. Install dependencies:
    ```bash
    npm install
    ```
-2. Copy environment template:
-   ```bash
-   cp .env.example .env.local
-   ```
-3. Set your credentials in `.env.local`:
+2. Configure `.env.local` (shared with `humor-project`):
    ```env
    SUPABASE_URL=https://your-project.supabase.co
    SUPABASE_ANON_KEY=your-anon-key
@@ -57,33 +41,10 @@ Week 5 evolution of the AI Joke Arena, upgrading model comedic capability, elimi
    OPENAI_API_KEY=sk-...
    GEMINI_API_KEY=AIza...
 
-   OPENAI_MODEL=gpt-6-luna
+   OPENAI_MODEL=gpt-6-luna,gpt-5.6-luna
    GEMINI_MODEL=gemini-3-flash-preview
    GENERATION_ENABLED=true
    ```
-4. Database migrations:
-   - For fresh databases: Run `supabase/schema.sql`, then `supabase/arena.sql`.
-   - For existing databases: Run `supabase/model-identity.sql`, then apply the updated `supabase/arena.sql`.
-5. Start development server:
-   ```bash
-   npm run dev
-   ```
-
----
-
-## Verification & Tests
-
-Run isolated in-memory database and UI flow tests:
-```bash
-npm run test:db        # Tests 3-vote graduation, model identity, Elo replay, RLS
-node tests/battle-flow.mjs # Tests single-click hybrid matchmaker, error recovery
-npm run build          # Verifies Next.js production compilation
-```
-
----
-
-## Deployment & Branching
-
-- **Week 4 Branch**: `https://github.com/jc6002/humor-project/tree/week4-arena` (Frozen for submission)
-- **Week 5 Branch**: `https://github.com/jc6002/humor-project/tree/week5-arena`
-- **Vercel**: Deploy Week 5 as a separate project or preview linked to `week5-arena` to guarantee that the Week 4 submission URL remains completely immutable.
+3. Run `supabase/week7_migration.sql` once in the **Supabase SQL Editor**.
+4. In **Supabase → Authentication → URL Configuration → Redirect URLs**, ensure `https://<your-admin-vercel-domain>/auth/callback` (or `https://*.vercel.app/auth/callback`) is listed.
+5. In **Vercel → Project Settings → Deployment Protection**, turn **OFF** Vercel Authentication so commit-specific URLs can be viewed in Incognito Mode.

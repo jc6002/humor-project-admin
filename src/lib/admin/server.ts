@@ -9,7 +9,7 @@ export type AdminGateResult =
 
 /**
  * Verifies Google OAuth session AND checks public.profiles.is_superadmin === true
- * using the service-role client so RLS never hides the flag.
+ * (or active auto_superadmin entry in public.whitelisted_emails) using service-role client.
  */
 export async function checkSuperadmin(): Promise<AdminGateResult> {
   const supabase = await createClient();
@@ -22,13 +22,25 @@ export async function checkSuperadmin(): Promise<AdminGateResult> {
   }
 
   const admin = adminClient();
-  const { data: profile } = await admin
-    .from('profiles')
-    .select('id, email, is_superadmin')
-    .eq('id', user.id)
-    .maybeSingle();
+  const [{ data: profile }, whitelistRes] = await Promise.all([
+    admin.from('profiles').select('id, email, is_superadmin').eq('id', user.id).maybeSingle(),
+    user.email
+      ? admin
+          .from('whitelisted_emails')
+          .select('email, auto_superadmin, is_active')
+          .ilike('email', user.email)
+          .maybeSingle()
+      : Promise.resolve({ data: null, error: null }),
+  ]);
 
-  if (!profile?.is_superadmin) {
+  const autoAdmin = Boolean(whitelistRes?.data?.is_active && whitelistRes?.data?.auto_superadmin);
+  if (autoAdmin && !profile?.is_superadmin) {
+    await admin
+      .from('profiles')
+      .upsert({ id: user.id, email: user.email, is_superadmin: true }, { onConflict: 'id' });
+  }
+
+  if (!profile?.is_superadmin && !autoAdmin) {
     return {
       status: 'forbidden',
       user: { id: user.id, email: user.email ?? profile?.email ?? 'Unknown email' },
@@ -64,8 +76,6 @@ export function adminFailure(error: unknown) {
 export async function fetchAdminDashboardData() {
   const admin = adminClient();
 
-  // Query raw tables directly without PostgREST embedded joins to avoid PGRST201
-  // multi-relationship ambiguity across arena_battles <-> arena_generations <-> arena_votes.
   const [
     profilesRes,
     authUsersRes,
@@ -74,7 +84,14 @@ export async function fetchAdminDashboardData() {
     generationsRes,
     votesRes,
     ratingEventsRes,
-    aiJokesRes,
+    providersRes,
+    chainsRes,
+    stepsRes,
+    termsRes,
+    examplesRes,
+    llmResponsesRes,
+    domainsRes,
+    whitelistRes,
   ] = await Promise.all([
     admin.from('profiles').select('*').order('created_at', { ascending: false }),
     admin.auth.admin.listUsers({ page: 1, perPage: 200 }),
@@ -83,8 +100,17 @@ export async function fetchAdminDashboardData() {
     admin.from('arena_generations').select('*').limit(400),
     admin.from('arena_votes').select('*').order('created_at', { ascending: false }).limit(300),
     admin.from('arena_rating_events').select('*').order('seq', { ascending: false }).limit(300),
-    admin.from('ai_jokes').select('*').order('id', { ascending: false }).limit(200),
+    admin.from('llm_providers').select('*').order('created_at', { ascending: true }),
+    admin.from('prompt_chains').select('*').order('mix_weight', { ascending: false }),
+    admin.from('prompt_chain_steps').select('*').order('step_order', { ascending: true }),
+    admin.from('comedy_terms').select('*').order('created_at', { ascending: false }),
+    admin.from('ai_generation_examples').select('*').order('created_at', { ascending: false }),
+    admin.from('llm_responses').select('*').order('created_at', { ascending: false }).limit(300),
+    admin.from('allowed_signup_domains').select('*').order('created_at', { ascending: false }),
+    admin.from('whitelisted_emails').select('*').order('created_at', { ascending: false }),
   ]);
+
+  const week7Migrated = !chainsRes.error;
 
   const profiles = profilesRes.data ?? [];
   const authUsers = authUsersRes.data;
@@ -94,21 +120,27 @@ export async function fetchAdminDashboardData() {
   const rawGenerations = generationsRes.data ?? [];
   const votes = votesRes.data ?? [];
   const ratingEvents = ratingEventsRes.data ?? [];
-  const aiJokes = aiJokesRes.data ?? [];
+  const llmProviders = providersRes.data ?? [];
+  const promptChains = chainsRes.data ?? [];
+  const promptChainSteps = stepsRes.data ?? [];
+  const comedyTerms = termsRes.data ?? [];
+  const generationExamples = examplesRes.data ?? [];
+  const llmResponses = llmResponsesRes.data ?? [];
+  const allowedDomains = domainsRes.data ?? [];
+  const whitelistedEmails = whitelistRes.data ?? [];
 
   const modelById = new Map<string, any>();
-  for (const m of allModels) {
-    modelById.set(m.id, m);
-  }
+  for (const m of allModels) modelById.set(m.id, m);
 
   const battleById = new Map<string, any>();
-  for (const b of battles) {
-    battleById.set(b.id, b);
-  }
+  for (const b of battles) battleById.set(b.id, b);
 
   const userEmailMap = new Map<string, string>();
   for (const u of authUsers?.users ?? []) {
     if (u.email) userEmailMap.set(u.id, u.email);
+  }
+  for (const p of profiles) {
+    if (p.email && !userEmailMap.has(p.id)) userEmailMap.set(p.id, p.email);
   }
 
   const battleCountByUser = new Map<string, number>();
@@ -134,14 +166,10 @@ export async function fetchAdminDashboardData() {
   }));
 
   const genById = new Map<string, any>();
-  for (const g of rawGenerations) {
-    genById.set(g.id, g);
-  }
+  for (const g of rawGenerations) genById.set(g.id, g);
 
   const eventByVoteId = new Map<string, any>();
-  for (const ev of ratingEvents) {
-    eventByVoteId.set(ev.vote_id, ev);
-  }
+  for (const ev of ratingEvents) eventByVoteId.set(ev.vote_id, ev);
 
   const enrichedVotes = votes.map((v) => {
     const battle = battleById.get(v.battle_id);
@@ -181,6 +209,13 @@ export async function fetchAdminDashboardData() {
     }
   }
 
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  for (const r of llmResponses) {
+    totalInputTokens += Number(r.input_tokens) || 0;
+    totalOutputTokens += Number(r.output_tokens) || 0;
+  }
+
   const angleMap = new Map<
     string,
     { angle: string; total: number; gptWins: number; geminiWins: number; ties: number; groans: number }
@@ -213,6 +248,10 @@ export async function fetchAdminDashboardData() {
         votes: b?.votes ?? 0,
         setup: g.setup,
         punchline: g.punchline,
+        cliche_to_avoid: g.cliche_to_avoid ?? null,
+        comic_twist: g.comic_twist ?? null,
+        prompt_chain_name: g.prompt_chain_name ?? b?.prompt_chain_name ?? 'Late-Night Stand-Up Roast',
+        usage: g.usage ?? {},
         latency_ms: g.latency_ms ?? null,
         created_at: b?.created_at ?? null,
       };
@@ -223,24 +262,56 @@ export async function fetchAdminDashboardData() {
       return tb - ta;
     });
 
+  const generationRequests = battles.map((b) => ({
+    id: b.id,
+    request_id: b.request_id,
+    user_id: b.user_id,
+    requester_email: userEmailMap.get(b.user_id) || b.user_id.slice(0, 8),
+    target: b.target,
+    angle: b.angle,
+    context: b.context,
+    prompt: b.prompt,
+    prompt_chain_name: b.prompt_chain_name ?? 'Late-Night Stand-Up Roast',
+    status: b.status,
+    error_code: b.error_code ?? null,
+    votes: b.votes ?? 0,
+    created_at: b.created_at,
+    completed_at: b.completed_at ?? null,
+  }));
+
   return {
+    week7Migrated,
     summary: {
       totalUsers: enrichedProfiles.length,
       superadmins: enrichedProfiles.filter((p) => p.is_superadmin).length,
       totalBattles: battles.length,
       totalGenerations: enrichedGenerations.length,
-      totalAiJokes: aiJokes.length,
       totalVotes,
       decisiveRate: totalVotes > 0 ? Math.round((decisiveVotes / totalVotes) * 100) : 0,
       groanRate: totalVotes > 0 ? Math.round((groanVotes / totalVotes) * 100) : 0,
       tieRate: totalVotes > 0 ? Math.round((tieVotes / totalVotes) * 100) : 0,
       avgLatencyMs: latencyCount > 0 ? Math.round(totalLatency / latencyCount) : 0,
+      totalLlmResponses: llmResponses.length,
+      totalInputTokens,
+      totalOutputTokens,
     },
-    models,
+    models: models.map((m) => ({
+      ...m,
+      is_enabled: m.is_enabled ?? true,
+      max_output_tokens: m.max_output_tokens ?? 600,
+    })),
+    llmProviders,
+    promptChains,
+    promptChainSteps,
+    comedyTerms,
+    generationExamples,
+    generationRequests,
+    llmResponses,
+    allowedDomains,
+    whitelistedEmails,
     angleBreakdown: Array.from(angleMap.values()).sort((a, b) => b.total - a.total),
     profiles: enrichedProfiles,
     generations: enrichedGenerations,
-    aiJokes,
     votes: enrichedVotes,
   };
 }

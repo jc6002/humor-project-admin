@@ -8,6 +8,7 @@ export type ModelRow = {
   ties: number;
   bad: number;
   battles: number;
+  is_enabled?: boolean;
   avg_latency_ms?: number | null;
 };
 
@@ -20,6 +21,7 @@ export type TopJoke = {
   target: string;
   angle?: string;
   context?: string;
+  flavor?: string | null;
   wins: number;
   decisive: number;
   score: number;
@@ -53,6 +55,10 @@ export type Joke = {
   version?: string;
   rating?: number;
   delta?: number | null;
+  latencyMs?: number | null;
+  clicheToAvoid?: string | null;
+  comicTwist?: string | null;
+  flavor?: string | null;
 };
 
 export type Battle = {
@@ -64,6 +70,8 @@ export type Battle = {
   choice?: string;
   votes?: number;
   source?: 'pool' | 'fresh' | 'custom';
+  flavor?: string | null;
+  guestPreview?: boolean;
   prompt?: string;
   left?: Joke;
   right?: Joke;
